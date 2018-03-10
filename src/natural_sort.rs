@@ -1,22 +1,58 @@
-use std::cmp::Ordering;
-use std::cmp::Ordering::*;
-use std::str::FromStr;
 use num::bigint::BigInt;
+use regex::Regex;
 
-#[derive(Debug, PartialEq, Eq)]
+use std::cmp::Ordering;
+use std::str::FromStr;
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum StringElem<'a> {
     Letters(&'a str),
-    Number(BigInt)
+    Number(BigInt),
 }
 
 /// A `HumanString` is a sort of string-like object that can be compared in a
 /// human-friendly way.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct HumanString<'a> {
-    elems: Vec<StringElem<'a>>
+    elems: Vec<StringElem<'a>>,
 }
 
+impl<'a> HumanString<'a> {
+    fn process_token(input: &'a str) -> (StringElem<'a>, &str) {
+        lazy_static! {
+            static ref NUMBERS: Regex = Regex::new("^[0-9]+").unwrap();
+            static ref LETTERS: Regex = Regex::new("^[^0-9]+").unwrap();
+        }
+
+        if let Some(pos_end) = (*NUMBERS).find(input).map(|m| m.end()) {
+            (
+                StringElem::Number(BigInt::from_str(&input[..pos_end]).unwrap()),
+                &input[pos_end..],
+            )
+        } else {
+            let pos_end = (*LETTERS).find(input).unwrap().end();
+            (StringElem::Letters(&input[..pos_end]), &input[pos_end..])
+        }
+    }
+
+    #[inline]
+    /// Constructs a `HumanString` from a `&str`.
+    pub fn from_str(mut rest: &'a str) -> HumanString<'a> {
+        let mut elems = Vec::new();
+        while !rest.is_empty() {
+            let (token, new_rest) = HumanString::process_token(rest);
+
+            elems.push(token);
+            rest = new_rest;
+        }
+
+        HumanString { elems }
+    }
+}
+
+/// A utility function for sorting a list of strings using human sorting.
 impl<'a> PartialOrd for HumanString<'a> {
+    #[inline]
     /// `HumanString`s are ordered based on their sub-components (a
     /// `HumanString` is represented as a sequence of numbers and strings). If
     /// two strings have analogous components, then they can be compared:
@@ -44,88 +80,29 @@ impl<'a> PartialOrd for HumanString<'a> {
         // First, create a list of Option<Ordering>s. If there's a type
         // mismatch, have the comparison resolve to `None`.
         let pairs = self.elems.iter().zip(other.elems.iter());
-        let compares = pairs.map(|pair|
-            match pair {
-                (&StringElem::Number(ref a), &StringElem::Number(ref b)) => {
-                    a.partial_cmp(&b)
-                },
+        let compares = pairs.map(|pair| match pair {
+            (&StringElem::Number(ref a), &StringElem::Number(ref b)) => a.partial_cmp(b),
+            (&StringElem::Letters(a), &StringElem::Letters(b)) => a.partial_cmp(b),
+            _ => None,
+        });
 
-                (&StringElem::Letters(ref a), &StringElem::Letters(ref b)) => {
-                    a.partial_cmp(b)
-                },
-
-                _ => { None }
-            }
-        );
-
-        // The first time we run into anything that isn't just Some(Equal),
+        // The first time we run into anything that isn't just Some(Ordering::Equal),
         // return it.
         for comparison in compares {
             match comparison {
-                Some(Equal) => { },
-                nonequal @ _ => { return nonequal; }
+                Some(Ordering::Equal) => {}
+                unequal => {
+                    return unequal;
+                }
             }
         }
 
-        // If we're still here, then all comparisons resulted in Some(Equal). We
+        // If we're still here, then all comparisons resulted in Some(Ordering::Equal). We
         // then fall back to comparing the length of the two strings' elems.
         self.elems.len().partial_cmp(&other.elems.len())
     }
 }
 
-impl<'a> HumanString<'a> {
-    /// Constructs a `HumanString` from a `&str`.
-    pub fn from_str(string: &str) -> HumanString {
-        let mut elems = Vec::new();
-        let mut to_parse = string;
-
-        while !to_parse.is_empty() {
-            let (next_elem, next_to_parse) = HumanString::process_token(to_parse);
-
-            elems.push(next_elem);
-            to_parse = next_to_parse;
-        }
-
-        HumanString { elems: elems }
-    }
-
-    fn process_token(to_parse: &'a str) -> (StringElem<'a>, &str) {
-        let numbers_re = regex!(r"^[0-9]+");
-        let letters_re = regex!(r"^[^0-9]+");
-
-        if let Some(numbers_match) = numbers_re.find(to_parse) {
-            HumanString::process_number(numbers_match, to_parse)
-        } else {
-            let letters_match = letters_re.find(to_parse).unwrap();
-            HumanString::process_letters(letters_match, to_parse)
-        }
-    }
-
-    fn process_number(regex_match: (usize, usize),
-                      to_parse: &'a str) -> (StringElem<'a>, &str) {
-        let (_, end_index) = regex_match;
-        let prefix_to_num: BigInt = FromStr::from_str(&to_parse[..end_index])
-                                    .unwrap();
-
-        let next_token = StringElem::Number(prefix_to_num);
-        let to_parse_suffix = &to_parse[end_index..];
-
-        (next_token, to_parse_suffix)
-    }
-
-    fn process_letters(regex_match: (usize, usize),
-                       to_parse: &'a str) -> (StringElem<'a>, &str) {
-        let (_, end_index) = regex_match;
-        let prefix = &to_parse[..end_index];
-
-        let next_token = StringElem::Letters(prefix);
-        let to_parse_suffix = &to_parse[end_index..];
-
-        (next_token, to_parse_suffix)
-    }
-}
-
-/// A utility function for sorting a list of strings using human sorting.
 ///
 /// ```
 /// use natural_sort::natural_sort;
@@ -153,22 +130,24 @@ use num::bigint::ToBigInt;
 fn test_makes_numseq() {
     let str1 = "123";
     let hstr1 = HumanString {
-        elems: vec![StringElem::Number(123.to_bigint().unwrap())]
+        elems: vec![StringElem::Number(123.to_bigint().unwrap())],
     };
     assert_eq!(HumanString::from_str(str1), hstr1);
 
     let str2 = "abc";
     let hstr2 = HumanString {
-        elems: vec![StringElem::Letters("abc")]
+        elems: vec![StringElem::Letters("abc")],
     };
     assert_eq!(HumanString::from_str(str2), hstr2);
 
     let str3 = "abc123xyz456";
     let hstr3 = HumanString {
-        elems: vec![StringElem::Letters("abc"),
-                    StringElem::Number(123.to_bigint().unwrap()),
-                    StringElem::Letters("xyz"),
-                    StringElem::Number(456.to_bigint().unwrap())]
+        elems: vec![
+            StringElem::Letters("abc"),
+            StringElem::Number(123.to_bigint().unwrap()),
+            StringElem::Letters("xyz"),
+            StringElem::Number(456.to_bigint().unwrap()),
+        ],
     };
     assert_eq!(HumanString::from_str(str3), hstr3);
 }
@@ -176,24 +155,23 @@ fn test_makes_numseq() {
 #[test]
 fn test_compares_numseq() {
     fn compare_numseq(str1: &str, str2: &str) -> Option<Ordering> {
-        HumanString::from_str(str1).partial_cmp(
-            &HumanString::from_str(str2))
+        HumanString::from_str(str1).partial_cmp(&HumanString::from_str(str2))
     }
 
-    assert_eq!(compare_numseq("aaa", "aaa"), Some(Equal));
-    assert_eq!(compare_numseq("aaa", "aab"), Some(Less));
-    assert_eq!(compare_numseq("aab", "aaa"), Some(Greater));
-    assert_eq!(compare_numseq("aaa", "aa"), Some(Greater));
+    assert_eq!(compare_numseq("aaa", "aaa"), Some(Ordering::Equal));
+    assert_eq!(compare_numseq("aaa", "aab"), Some(Ordering::Less));
+    assert_eq!(compare_numseq("aab", "aaa"), Some(Ordering::Greater));
+    assert_eq!(compare_numseq("aaa", "aa"), Some(Ordering::Greater));
 
-    assert_eq!(compare_numseq("111", "111"), Some(Equal));
-    assert_eq!(compare_numseq("111", "112"), Some(Less));
-    assert_eq!(compare_numseq("112", "111"), Some(Greater));
+    assert_eq!(compare_numseq("111", "111"), Some(Ordering::Equal));
+    assert_eq!(compare_numseq("111", "112"), Some(Ordering::Less));
+    assert_eq!(compare_numseq("112", "111"), Some(Ordering::Greater));
 
-    assert_eq!(compare_numseq("a1", "a1"), Some(Equal));
-    assert_eq!(compare_numseq("a1", "a2"), Some(Less));
-    assert_eq!(compare_numseq("a2", "a1"), Some(Greater));
+    assert_eq!(compare_numseq("a1", "a1"), Some(Ordering::Equal));
+    assert_eq!(compare_numseq("a1", "a2"), Some(Ordering::Less));
+    assert_eq!(compare_numseq("a2", "a1"), Some(Ordering::Greater));
 
-    assert_eq!(compare_numseq("1a2", "1b1"), Some(Less));
+    assert_eq!(compare_numseq("1a2", "1b1"), Some(Ordering::Less));
 
     assert_eq!(compare_numseq("1", "a"), None);
 }
