@@ -29,7 +29,7 @@
 //! ```
 //!
 //! Human-comparable strings can be created directly using
-//! `natural_sort::HumanString::from_str`.
+//! `natural_sort::HumanStr::new`.
 
 #[macro_use]
 extern crate lazy_static;
@@ -42,64 +42,156 @@ use regex::Regex;
 use std::cmp::Ordering;
 use std::str::FromStr;
 
+lazy_static! {
+    static ref NUMBERS: Regex = Regex::new("^[0-9]+").unwrap();
+    static ref LETTERS: Regex = Regex::new("^[^0-9]+").unwrap();
+}
+
+macro_rules! impl_new {
+    ($elem_ty: ty, $struct: ident, $ret_ty: ty) => {
+        #[inline]
+        /// Constructs a `$struct_ty` from a `$elem_ty`.
+        pub fn new(mut rest: $elem_ty) -> $ret_ty {
+            let mut elems = Vec::new();
+            while !rest.is_empty() {
+                let (token, new_rest) = Self::process_token(rest);
+
+                elems.push(token);
+                rest = new_rest;
+            }
+            $struct { elems }
+        }
+    };
+}
+
+macro_rules! impl_partial_ord {
+    ($elem_ident:ident, $struct:ident) => {
+        #[inline]
+        /// `$struct`s are ordered based on their sub-components (a
+        /// `$struct` is represented as a sequence of numbers and strings). If
+        /// two strings have analogous components, then they can be compared:
+        ///
+        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+            // First, create a list of Option<Ordering>s. If there's a type
+            // mismatch, have the comparison resolve to `None`.
+            let pairs = self.elems.iter().zip(other.elems.iter());
+            let compares = pairs.map(|pair| match pair {
+                (&$elem_ident::Number(ref a), &$elem_ident::Number(ref b)) => a.partial_cmp(b),
+                (&$elem_ident::Letters(ref a), &$elem_ident::Letters(ref b)) => a.partial_cmp(b),
+                _ => None,
+            });
+
+            // The first time we run into anything that isn't just Some(Ordering::Equal),
+            // return it.
+            for comparison in compares {
+                match comparison {
+                    Some(Ordering::Equal) => {}
+                    unequal => {
+                        return unequal;
+                    }
+                }
+            }
+
+            // If we're still here, then all comparisons resulted in Some(Ordering::Equal). We
+            // then fall back to comparing the length of the two strings' elems.
+            self.elems.len().partial_cmp(&other.elems.len())
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-enum StringElem<'a> {
+enum StrElem<'a> {
     Letters(&'a str),
+    Number(BigInt),
+}
+
+/// A `HumanStr` is a sort of string-like object that can be compared in a
+/// human-friendly way.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct HumanStr<'a> {
+    elems: Vec<StrElem<'a>>,
+}
+
+impl<'a> HumanStr<'a> {
+    impl_new!(&'a str, HumanStr, HumanStr<'a>);
+
+    fn process_token(input: &'a str) -> (StrElem<'a>, &str) {
+        if let Some(pos_end) = (*NUMBERS).find(input).map(|m| m.end()) {
+            (
+                StrElem::Number(BigInt::from_str(&input[..pos_end]).unwrap()),
+                &input[pos_end..],
+            )
+        } else {
+            let pos_end = (*LETTERS).find(input).unwrap().end();
+            (StrElem::Letters(&input[..pos_end]), &input[pos_end..])
+        }
+    }
+}
+
+/// A utility function for sorting a list of strings using human sorting.
+impl<'a> PartialOrd for HumanStr<'a> {
+    /// ```
+    /// use natural_sort::HumanStr;
+    ///
+    /// assert!(HumanStr::new("a1a") < HumanStr::new("a1b"));
+    /// assert!(HumanStr::new("a11") > HumanStr::new("a2"));
+    /// ```
+    ///
+    /// However, `HumanStr`s cannot always be compared. If the components of
+    /// two strings do not match before a difference is found, then no
+    /// comparison can be made:
+    ///
+    /// ```
+    /// use natural_sort::HumanStr;
+    ///
+    /// let a = HumanStr::new("123");
+    /// let b = HumanStr::new("abc");
+    ///
+    /// assert_eq!(a.partial_cmp(&b), None);
+    /// ```
+    impl_partial_ord!(StrElem, HumanStr);
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum StringElem {
+    Letters(String),
     Number(BigInt),
 }
 
 /// A `HumanString` is a sort of string-like object that can be compared in a
 /// human-friendly way.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct HumanString<'a> {
-    elems: Vec<StringElem<'a>>,
+pub struct HumanString {
+    elems: Vec<StringElem>,
 }
 
-impl<'a> HumanString<'a> {
-    #[inline]
-    /// Constructs a `HumanString` from a `&str`.
-    pub fn from_str(mut rest: &'a str) -> HumanString<'a> {
-        let mut elems = Vec::new();
-        while !rest.is_empty() {
-            let (token, new_rest) = HumanString::process_token(rest);
+impl HumanString {
+    impl_new!(String, HumanString, HumanString);
 
-            elems.push(token);
-            rest = new_rest;
-        }
-
-        HumanString { elems }
-    }
-
-    fn process_token(input: &'a str) -> (StringElem<'a>, &str) {
+    fn process_token(mut input: String) -> (StringElem, String) {
         lazy_static! {
             static ref NUMBERS: Regex = Regex::new("^[0-9]+").unwrap();
             static ref LETTERS: Regex = Regex::new("^[^0-9]+").unwrap();
         }
 
-        if let Some(pos_end) = (*NUMBERS).find(input).map(|m| m.end()) {
-            (
-                StringElem::Number(BigInt::from_str(&input[..pos_end]).unwrap()),
-                &input[pos_end..],
-            )
+        if let Some(pos_end) = (*NUMBERS).find(&input).map(|m| m.end()) {
+            let number = StringElem::Number(BigInt::from_str(&input[..pos_end]).unwrap());
+            input.drain(..pos_end).count();
+            (number, input)
         } else {
-            let pos_end = (*LETTERS).find(input).unwrap().end();
-            (StringElem::Letters(&input[..pos_end]), &input[pos_end..])
+            let pos_end = (*LETTERS).find(&input).unwrap().end();
+            let rest = input.split_off(pos_end - 1);
+            (StringElem::Letters(input), rest)
         }
     }
 }
 
-/// A utility function for sorting a list of strings using human sorting.
-impl<'a> PartialOrd for HumanString<'a> {
-    #[inline]
-    /// `HumanString`s are ordered based on their sub-components (a
-    /// `HumanString` is represented as a sequence of numbers and strings). If
-    /// two strings have analogous components, then they can be compared:
-    ///
+impl PartialOrd for HumanString {
     /// ```
     /// use natural_sort::HumanString;
     ///
-    /// assert!(HumanString::from_str("a1a") < HumanString::from_str("a1b"));
-    /// assert!(HumanString::from_str("a11") > HumanString::from_str("a2"));
+    /// assert!(HumanString::new("a1a") < HumanString::new("a1b"));
+    /// assert!(HumanString::new("a11") > HumanString::new("a2"));
     /// ```
     ///
     /// However, `HumanString`s cannot always be compared. If the components of
@@ -109,36 +201,12 @@ impl<'a> PartialOrd for HumanString<'a> {
     /// ```
     /// use natural_sort::HumanString;
     ///
-    /// let a = HumanString::from_str("123");
-    /// let b = HumanString::from_str("abc");
+    /// let a = HumanString::new("123");
+    /// let b = HumanString::new("abc");
     ///
     /// assert_eq!(a.partial_cmp(&b), None);
     /// ```
-    fn partial_cmp(&self, other: &HumanString) -> Option<Ordering> {
-        // First, create a list of Option<Ordering>s. If there's a type
-        // mismatch, have the comparison resolve to `None`.
-        let pairs = self.elems.iter().zip(other.elems.iter());
-        let compares = pairs.map(|pair| match pair {
-            (&StringElem::Number(ref a), &StringElem::Number(ref b)) => a.partial_cmp(b),
-            (&StringElem::Letters(a), &StringElem::Letters(b)) => a.partial_cmp(b),
-            _ => None,
-        });
-
-        // The first time we run into anything that isn't just Some(Ordering::Equal),
-        // return it.
-        for comparison in compares {
-            match comparison {
-                Some(Ordering::Equal) => {}
-                unequal => {
-                    return unequal;
-                }
-            }
-        }
-
-        // If we're still here, then all comparisons resulted in Some(Ordering::Equal). We
-        // then fall back to comparing the length of the two strings' elems.
-        self.elems.len().partial_cmp(&other.elems.len())
-    }
+    impl_partial_ord!(StringElem, HumanString);
 }
 
 ///
@@ -152,8 +220,8 @@ impl<'a> PartialOrd for HumanString<'a> {
 /// ```
 pub fn natural_sort(strs: &mut [&str]) {
     fn sort_fn(a: &&str, b: &&str) -> Ordering {
-        let seq_a = HumanString::from_str(*a);
-        let seq_b = HumanString::from_str(*b);
+        let seq_a = HumanStr::new(*a);
+        let seq_b = HumanStr::new(*b);
 
         seq_a.partial_cmp(&seq_b).unwrap()
     }
@@ -167,33 +235,33 @@ use num::bigint::ToBigInt;
 #[test]
 fn test_makes_numseq() {
     let str1 = "123";
-    let hstr1 = HumanString {
-        elems: vec![StringElem::Number(123.to_bigint().unwrap())],
+    let hstr1 = HumanStr {
+        elems: vec![StrElem::Number(123.to_bigint().unwrap())],
     };
-    assert_eq!(HumanString::from_str(str1), hstr1);
+    assert_eq!(HumanStr::new(str1), hstr1);
 
     let str2 = "abc";
-    let hstr2 = HumanString {
-        elems: vec![StringElem::Letters("abc")],
+    let hstr2 = HumanStr {
+        elems: vec![StrElem::Letters("abc")],
     };
-    assert_eq!(HumanString::from_str(str2), hstr2);
+    assert_eq!(HumanStr::new(str2), hstr2);
 
     let str3 = "abc123xyz456";
-    let hstr3 = HumanString {
+    let hstr3 = HumanStr {
         elems: vec![
-            StringElem::Letters("abc"),
-            StringElem::Number(123.to_bigint().unwrap()),
-            StringElem::Letters("xyz"),
-            StringElem::Number(456.to_bigint().unwrap()),
+            StrElem::Letters("abc"),
+            StrElem::Number(123.to_bigint().unwrap()),
+            StrElem::Letters("xyz"),
+            StrElem::Number(456.to_bigint().unwrap()),
         ],
     };
-    assert_eq!(HumanString::from_str(str3), hstr3);
+    assert_eq!(HumanStr::new(str3), hstr3);
 }
 
 #[test]
 fn test_compares_numseq() {
     fn compare_numseq(str1: &str, str2: &str) -> Option<Ordering> {
-        HumanString::from_str(str1).partial_cmp(&HumanString::from_str(str2))
+        HumanStr::new(str1).partial_cmp(&HumanStr::new(str2))
     }
 
     assert_eq!(compare_numseq("aaa", "aaa"), Some(Ordering::Equal));
@@ -216,7 +284,7 @@ fn test_compares_numseq() {
 
 #[test]
 fn test_nonascii_digits() {
-    HumanString::from_str("٩");
+    HumanStr::new("٩");
 }
 
 #[test]
