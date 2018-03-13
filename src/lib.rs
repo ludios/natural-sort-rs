@@ -64,6 +64,19 @@ macro_rules! impl_new {
     };
 }
 
+macro_rules! impl_process_token {
+    ($elem_ty: ty, $inner_elem_ty: ty, $numbers_fun: expr, $letters_fun: expr) => {
+        fn process_token(input: $elem_ty) -> ($inner_elem_ty, $elem_ty) {
+            if let Some(pos_end) = (*NUMBERS).find(&input).map(|m| m.end()) {
+                $numbers_fun(input, pos_end)
+            } else {
+                let pos_end = (*LETTERS).find(&input).unwrap().end();
+                $letters_fun(input, pos_end)
+            }
+        }
+    };
+}
+
 macro_rules! impl_partial_ord {
     ($elem_ident:ident, $struct:ident) => {
         #[inline]
@@ -114,18 +127,15 @@ pub struct HumanStr<'a> {
 
 impl<'a> HumanStr<'a> {
     impl_new!(&'a str, HumanStr, HumanStr<'a>);
-
-    fn process_token(input: &'a str) -> (StrElem<'a>, &str) {
-        if let Some(pos_end) = (*NUMBERS).find(input).map(|m| m.end()) {
-            (
-                StrElem::Number(BigInt::from_str(&input[..pos_end]).unwrap()),
-                &input[pos_end..],
-            )
-        } else {
-            let pos_end = (*LETTERS).find(input).unwrap().end();
-            (StrElem::Letters(&input[..pos_end]), &input[pos_end..])
-        }
-    }
+    impl_process_token!(
+        &'a str,
+        StrElem<'a>,
+        |input: &'a str, pos_end| (
+            StrElem::Number(BigInt::from_str(&input[..pos_end]).unwrap()),
+            &input[pos_end..],
+        ),
+        |input: &'a str, pos_end| (StrElem::Letters(&input[..pos_end]), &input[pos_end..])
+    );
 }
 
 /// A utility function for sorting a list of strings using human sorting.
@@ -167,23 +177,19 @@ pub struct HumanString {
 
 impl HumanString {
     impl_new!(String, HumanString, HumanString);
-
-    fn process_token(mut input: String) -> (StringElem, String) {
-        lazy_static! {
-            static ref NUMBERS: Regex = Regex::new("^[0-9]+").unwrap();
-            static ref LETTERS: Regex = Regex::new("^[^0-9]+").unwrap();
-        }
-
-        if let Some(pos_end) = (*NUMBERS).find(&input).map(|m| m.end()) {
+    impl_process_token!(
+        String,
+        StringElem,
+        |mut input: String, pos_end| {
             let number = StringElem::Number(BigInt::from_str(&input[..pos_end]).unwrap());
             input.drain(..pos_end).count();
             (number, input)
-        } else {
-            let pos_end = (*LETTERS).find(&input).unwrap().end();
+        },
+        |mut input: String, pos_end| {
             let rest = input.split_off(pos_end - 1);
             (StringElem::Letters(input), rest)
         }
-    }
+    );
 }
 
 impl PartialOrd for HumanString {
