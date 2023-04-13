@@ -31,11 +31,7 @@
 //! Human-comparable strings can be created directly using
 //! `natural_sort::HumanStr::new`.
 
-#[macro_use]
-extern crate lazy_static;
-extern crate num;
-extern crate regex;
-
+use lazy_static::lazy_static;
 use num::bigint::BigInt;
 use regex::Regex;
 
